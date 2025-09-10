@@ -1,4 +1,8 @@
 on: [pull_request, push]
+permissions:
+  id-token: write
+  contents: write
+  packages: write
 jobs:
  linux:
     uses: minecraft-linux/appimage-builder/.github/workflows/main.yml@main
