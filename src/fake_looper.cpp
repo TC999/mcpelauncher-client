@@ -42,6 +42,10 @@ void FakeLooper::initHybrisHooks(std::unordered_map<std::string, void *> &syms) 
     syms["ALooper_pollAll"] = (void *)+[](int timeoutMillis, int *outFd, int *outEvents, void **outData) {
         return currentLooper->pollAll(timeoutMillis, outFd, outEvents, outData);
     };
+    syms["ALooper_pollOnce"] = (void *)+[](int timeoutMillis, int *outFd, int *outEvents, void **outData) {
+        return currentLooper->pollAll(timeoutMillis, outFd, outEvents, outData);
+    };
+
     syms["AInputQueue_attachLooper"] = (void *)+[](AInputQueue *queue, ALooper *looper, int ident, ALooper_callbackFunc callback, void *data) {
         ((FakeLooper *)(void *)looper)->attachInputQueue(ident, callback, data);
     };

@@ -140,16 +140,25 @@ void HttpClientRequest::setHttpHeader(std::shared_ptr<FakeJni::JString> name, st
 
 void HttpClientRequest::doRequestAsync(FakeJni::JLong sourceCall) {
     call_handle = sourceCall;
-    auto me = this->shared_from_this();
+    auto me = this->weak_from_this();
     FakeJni::LocalFrame frame;
     auto&& jvm = &frame.getJniEnv().getVM();
     std::thread([=]() {
         FakeJni::JniEnvContext ctx(*jvm);
         try {
-            auto anotherme = me;
+            auto anotherme = me.lock();
+            if(anotherme == nullptr) {
+                Log::error("HttpClient", "doRequestAsync called, HttpClientRequest is already destroyed");
+                return;
+            }
             auto ret = curl_easy_perform(curl);
             long response_code;
             curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
+            anotherme = nullptr; // Clear the shared pointer to avoid dangling reference
+            if (me.expired()) {
+                Log::error("HttpClient", "doRequestAsync called, HttpClientRequest is already destroyed");
+                return;
+            }
             FakeJni::LocalFrame frame;
             if(ret == CURLE_OK) {
 #ifndef NDEBUG
@@ -171,6 +180,10 @@ void HttpClientRequest::doRequestAsync(FakeJni::JLong sourceCall) {
                 }
             }
         } catch(...) {
+            if(me.expired()) {
+                Log::error("HttpClient", "Exception in doRequestAsync, HttpClientRequest is already destroyed");
+                return;
+            }
             FakeJni::LocalFrame frame(*jvm);
             if(NetworkObserver::getDescriptor()->getMethod("(Ljava/lang/String;)V", "Log")) {
                 auto method = getClass().getMethod("(JLjava/lang/String;Ljava/lang/String;Ljava/lang/String;Z)V", "OnRequestFailed");

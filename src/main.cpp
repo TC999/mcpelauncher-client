@@ -48,6 +48,8 @@
 #include <daemon_utils/auto_shutdown_service.h>
 #include "settings.h"
 #include "imgui_ui.h"
+#include <sstream>
+#include <mcpelauncher/apkinfo.h>
 
 struct RpcCallbackServer : daemon_utils::auto_shutdown_service {
     RpcCallbackServer(const std::string& path, JniSupport& support) : daemon_utils::auto_shutdown_service(path, daemon_utils::shutdown_policy::never) {
@@ -201,6 +203,24 @@ int main(int argc, char* argv[]) {
 #endif
     Log::info("Launcher", "OS: %s", TARGET);
     Log::info("Launcher", "Arch: %s", ARCH);
+
+    std::ifstream manifestFileStream(PathHelper::getGameDir() + "AndroidManifest.xml", std::ios::binary);
+    if(manifestFileStream.is_open()) {
+        std::stringstream manifest;
+        manifest << manifestFileStream.rdbuf();
+        auto smanifest = manifest.str();
+
+        axml::AXMLFile manifestFile (smanifest.data(), smanifest.size());
+        axml::AXMLParser manifestParser (manifestFile);
+        ApkInfo apkInfo = ApkInfo::fromXml(manifestParser);
+
+        Log::info("Launcher", "Minecraft Package: %s", apkInfo.package.c_str());
+        Log::info("Launcher", "Minecraft Version Code: %d", apkInfo.versionCode);
+
+        MinecraftVersion::init(apkInfo.package, apkInfo.versionCode);
+    }
+    Log::info("Launcher", "Game version: %s", MinecraftVersion::getString().c_str());
+
     loadGameOptions();
 #if defined(__i386__) || defined(__x86_64__)
     {
@@ -381,14 +401,6 @@ Hardware	: Qualcomm Technologies, Inc MSM8998
             Log::info("FMOD", "Failed to load host libfmod: '%s', use pulseaudio/sdl3 backend with android fmod if available", e.what());
         }
     }
-    if(!fmodLoaded) {
-#ifdef HAVE_SDL3AUDIO
-        SDL_Init(SDL_INIT_AUDIO);
-        SDL_SetHint(SDL_HINT_AUDIO_DEVICE_APP_ICON_NAME, "mcpelauncher-ui-qt");
-        SDL_SetHint(SDL_HINT_AUDIO_DEVICE_STREAM_NAME, "Minecraft");
-        FakeAudio::updateDefaults();
-#endif
-    }
     FakeEGL::setProcAddrFunction((void* (*)(const char*))windowManager->getProcAddrFunc());
     FakeEGL::installLibrary();
     if(options.graphicsApi == GraphicsApi::OPENGL_ES2) {
@@ -427,6 +439,7 @@ Hardware	: Qualcomm Technologies, Inc MSM8998
                                                     });
 #endif
 
+    JniSupport support;
     ModLoader modLoader;
     if(!freeOnly.get()) {
         modLoader.loadModsFromDirectory(PathHelper::getPrimaryDataDirectory() + "mods/", true);
@@ -484,8 +497,6 @@ Hardware	: Qualcomm Technologies, Inc MSM8998
             modLoader.loadModsFromDirectory(d);
         }
     }
-
-    Log::info("Launcher", "Game version: %s", MinecraftVersion::getString().c_str());
 
     Log::info("Launcher", "Applying patches");
     if(v8Flags.get().size()) {
@@ -553,7 +564,7 @@ Hardware	: Qualcomm Technologies, Inc MSM8998
     }
 
     Log::info("Launcher", "Initializing JNI");
-    JniSupport support;
+
     FakeLooper::setJniSupport(&support);
     support.registerMinecraftNatives(+[](const char* sym) {
         return linker::dlsym(handle, sym);
@@ -574,6 +585,33 @@ Hardware	: Qualcomm Technologies, Inc MSM8998
     } catch(const std::exception& ex) {
         Log::error("Launcher", "Failed to bind file_handler, you may be unable to import files: %s", ex.what());
     }
+
+#ifdef __x86_64__
+    if(MinecraftVersion::isExactly(1, 26, 0, 2)) {
+        // Fix corrupted __emutls_control structs in libminecraftpe.so
+        // The v1.26 binary has 71 emutls controls but 2 have invalid data due to
+        // linker symbol collisions. Patch them to valid {size=8, align=8, index=0, templ=NULL}.
+        {
+            struct EmutlsControl {
+                size_t size;
+                size_t align;
+                uintptr_t index;
+                void* templ;
+            };
+            static const uintptr_t bad_controls[] = {
+                0x13701258,  // overlaps with rand_meth data (garbage bytes)
+            };
+            for (auto offset : bad_controls) {
+                auto* ctrl = (EmutlsControl*)((uintptr_t)base + offset);
+                ctrl->size = 8;
+                ctrl->align = 8;
+                ctrl->index = 0;
+                ctrl->templ = nullptr;
+                Log::info("Launcher", "Fixed corrupted emutls control at base+0x%lx", (unsigned long)offset);
+            }
+        }
+    }
+#endif
 
     Log::info("Launcher", "Executing main thread");
     ThreadMover::executeMainThread();

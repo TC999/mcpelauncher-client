@@ -17,6 +17,10 @@ void FakeAudio::initHybrisHooks(std::unordered_map<std::string, void *> &syms) {
         return AAUDIO_OK;
     };
     syms["AAudio_createStreamBuilder"] = (void *)+[](FakeAudioStreamBuilder *_Nullable *_Nonnull builder) -> aaudio_result_t {
+        SDL_Init(SDL_INIT_AUDIO);
+        SDL_SetHint(SDL_HINT_AUDIO_DEVICE_APP_ICON_NAME, "mcpelauncher-ui-qt");
+        SDL_SetHint(SDL_HINT_AUDIO_DEVICE_STREAM_NAME, "Minecraft");
+        FakeAudio::updateDefaults();
         *builder = new FakeAudioStreamBuilder{};
         return AAUDIO_OK;
     };
