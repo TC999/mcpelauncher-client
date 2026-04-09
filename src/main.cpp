@@ -75,8 +75,6 @@ LauncherOptions options;
 
 void printVersionInfo();
 
-void loadGameOptions();
-
 template <const char** names, class>
 class SmartStub;
 template <const char** names, size_t... I>
@@ -97,6 +95,30 @@ std::string normalizePath(const std::string& path) {
         return path + '/';
     return path;
 }
+
+#ifdef __APPLE__
+extern "C" __attribute__((weak)) const char * elg_lib = "";
+#endif
+
+static std::string getOptionsPath() {
+    return PathHelper::getPrimaryDataDirectory() + "games/com.mojang/minecraftpe/options.txt";
+}
+
+static void parseOptions(properties::property_list& properties) {
+    std::ifstream propertiesFile(getOptionsPath());
+    if(propertiesFile) {
+        properties.load(propertiesFile);
+    }
+}
+
+static void saveOptions(properties::property_list& properties) {
+    std::ofstream propertiesFile(getOptionsPath());
+    if(propertiesFile.is_open()) {
+        properties.save(propertiesFile);
+    }
+}
+
+void readOptions();
 
 int main(int argc, char* argv[]) {
     if(argc == 2 && argv[1][0] != '-') {
@@ -221,7 +243,35 @@ int main(int argc, char* argv[]) {
     }
     Log::info("Launcher", "Game version: %s", MinecraftVersion::getString().c_str());
 
-    loadGameOptions();
+    readOptions();
+
+#ifdef __APPLE__
+    if(MinecraftVersion::isAtLeast(1, 26, 10, 0)) {
+        std::string appdir = PathHelper::getAppDir();
+        std::string libEGL = appdir + "/../Frameworks/mvk-angle/libEGL.dylib";
+        std::string MoltenVK_icd = appdir + "/../Frameworks/mvk-angle/MoltenVK_icd.json";
+        if(FileUtil::exists(libEGL) && FileUtil::exists(MoltenVK_icd)) {
+            // Memory leak, but should be ok as onetime allocation
+            elg_lib = strdup(libEGL.data());
+            setenv("ANGLE_DEFAULT_PLATFORM", "vulkan", true);
+            setenv("VK_ICD_FILENAMES", MoltenVK_icd.data(), true);
+            // Vibrant Visuals not fully supported
+            properties::property_list properties(':');
+            properties::property<int> graphicsMode(properties, "graphics_mode", 2);
+            parseOptions(properties);
+            auto oldOption = graphicsMode.get();
+            if(oldOption != 0 && oldOption != 1) {
+                Log::warn("Launcher", "Vibrant Visuals via MoltenVK are not supported yet and causing rendering issues, disabling this graphics mode!");
+                graphicsMode.set(1);
+                saveOptions(properties);
+            }
+        } else {
+            Log::error("Launcher", "Failed to find one of '%s' and '%s'", libEGL.data(), MoltenVK_icd.data());
+            Log::error("Launcher", "Expect seeing a black screen, you have been warned");
+        }
+    }
+#endif
+
 #if defined(__i386__) || defined(__x86_64__)
     {
         CpuId cpuid;
@@ -612,6 +662,24 @@ Hardware	: Qualcomm Technologies, Inc MSM8998
         }
     }
 #endif
+    // Vibrant Visuals Crash Nvidia
+    // Issue: https://github.com/minecraft-linux/mcpelauncher-manifest/issues/1584
+    if(MinecraftVersion::isAtLeast(1, 21, 130, 0)) {
+        auto _glGetString = (const char*(*)(int)) windowManager->getProcAddrFunc()("glGetString");
+        if(_glGetString) {
+            auto renderer = _glGetString(0x1F01); // GL_RENDERER
+            if(renderer != nullptr && strstr(renderer, "NVIDIA") != nullptr) {
+                properties::property_list properties(':');
+                properties::property<int> volumetricFogQuality(properties, "volumetric_fog_quality", 0);
+                parseOptions(properties);
+                if(volumetricFogQuality.get() != 0) {
+                    Log::warn("Launcher", "Vibrant Visuals volumetric Fog via NVIDIA drivers are not supported causing crashs when entering worlds / server, disabling this graphics mode!");
+                }
+                volumetricFogQuality.set(0);
+                saveOptions(properties);
+            }
+        }
+    }
 
     Log::info("Launcher", "Executing main thread");
     ThreadMover::executeMainThread();
@@ -641,7 +709,7 @@ void printVersionInfo() {
     printf("MSA daemon path: %s\n", XboxLiveHelper::findMsa().c_str());
 }
 
-void loadGameOptions() {
+void readOptions() {
     properties::property_list properties(':');
     properties::property<int> leftKey(properties, "keyboard_type_0_key.left", 'A');
     properties::property<int> downKey(properties, "keyboard_type_0_key.back", 'S');
@@ -655,9 +723,19 @@ void loadGameOptions() {
 
     properties::property<bool> fullKeyboard(properties, "ctrl_fullkeyboardgameplay", false);
 
-    std::ifstream propertiesFile(PathHelper::getPrimaryDataDirectory() + "/games/com.mojang/minecraftpe/options.txt");
-    if(propertiesFile) {
-        properties.load(propertiesFile);
+    parseOptions(properties);
+
+    if(leftKey > 512 || downKey > 512 || rightKey > 512 || upKey > 512 || leftKeyFullKeyboard > 512 || downKeyFullKeyboard > 512 || rightKeyFullKeyboard > 512 || upKeyFullKeyboard > 512) {
+        Log::trace("BUG", "Launcher Release v1.7.2 might caused corruption reset Direction to WASD");
+        leftKey.set('A');
+        leftKeyFullKeyboard.set('A');
+        downKey.set('S');
+        downKeyFullKeyboard.set('S');
+        rightKey.set('D');
+        rightKeyFullKeyboard.set('D');
+        upKey.set('W');
+        upKeyFullKeyboard.set('W');
+        saveOptions(properties);
     }
 
     GameOptions::leftKey = leftKey;

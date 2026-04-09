@@ -1,6 +1,8 @@
 #pragma once
 
 #include <game_window.h>
+#include <properties/property_list.h>
+#include <properties/property.h>
 
 struct LauncherOptions {
     int windowWidth, windowHeight;
